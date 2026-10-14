@@ -823,7 +823,12 @@
     const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
     const mix = (a, b, t) => a + (b - a) * t;
     const focus = (str, start, power) => Math.pow(clamp((str - start) / (1 - start)), power);
-    let target = 0, shown = 0, running = false, visible = false, last = -1, lastPlatz = 0;
+    let target = 0, shown = 0, running = false, visible = false, last = -1, lastPlatz = 0, lastW = 0, zuletzt = 0;
+    // iPad (Ralf 14.10.2026: „beim Scrollen durch die Leuchtturmprojekte ziemlich ruckelig“): je Bild werden nur noch Lage und Deckkraft
+    // geschrieben, und nur, wenn sie sich ändern. Stapelreihenfolge, Fokus, Tab-Reihenfolge und Kartengröße ändern sich selten – vorher kamen
+    // sie in jedem Bild neu (jede z-index-Änderung ordnet in Safari die Ebenen neu, das kostete am iPad Bilder).
+    const merk = new Map();
+    const setz = (el, k, v) => { let m = merk.get(el); if (!m) merk.set(el, (m = {})); if (m[k] !== v) { m[k] = v; el.style[k] = v; } };
     // Namen mit festen Zeilen (<br>) verkleinern, falls die längste Zeile nicht ins Namensfeld passt
     const fit = () => titles.forEach((t) => {
       if (!t.querySelector("br")) return;
@@ -831,44 +836,57 @@
       const zuBreit = t.scrollWidth / t.clientWidth;
       if (zuBreit > 1) t.style.fontSize = parseFloat(getComputedStyle(t).fontSize) / zuBreit + "px";
     });
-    const place = (el, x, y, scale, opacity, z, mitte = "") => {   // mitte: Namen um ihre eigene Höhe zentrieren
-      el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)${mitte} scale(${scale.toFixed(3)})`;
-      el.style.opacity = opacity.toFixed(3); el.style.zIndex = z;
+    const place = (el, x, y, scale, opacity, mitte = "") => {   // mitte: Namen um ihre eigene Höhe zentrieren
+      setz(el, "transform", `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)${mitte} scale(${scale.toFixed(3)})`);
+      setz(el, "opacity", opacity.toFixed(3));
     };
+    // Stapelreihenfolge als Rang (stärker = weiter vorn, Gleichstand wie im Dokument): wechselt nur, wenn zwei Projekte die Plätze tauschen
+    const stapeln = (els, staerke) => els.map((_, i) => i).sort((a, b) => staerke[a] - staerke[b] || a - b).forEach((i, r) => setz(els[i], "zIndex", String(r + 1)));
+    const tS = new Array(n), cS = new Array(n);
     const render = (f) => {                                       // f = Fokus-Index, 0 … n-1
       const w = innerWidth, k = w < 1200 ? w / 1200 : 1;
       const rT = 520 * k, rC = 860 * k;
-      wrap.style.setProperty("--roll-card-w", 600 * k + "px");
-      wrap.style.setProperty("--roll-card-h", 420 * k + "px");
+      if (w !== lastW) { lastW = w; wrap.style.setProperty("--roll-card-w", 600 * k + "px"); wrap.style.setProperty("--roll-card-h", 420 * k + "px"); }
       const platz = Math.max(200, 2 * Math.min(w * 0.28 - 32, (w * 0.68 - 300 * k - 40) - w * 0.28));   // Namen dürfen nicht ins Bild ragen
       if (platz !== lastPlatz) { lastPlatz = platz; wrap.style.setProperty("--roll-title-w", platz + "px"); fit(); }
       const xT = w * 0.03, xC = -w * 0.07;                         // Fokus: Name bei 28 %, Bild bei 68 % der Breite
       for (let i = 0; i < n; i++) {
         const a = ((i - f) / SLOTS) * Math.PI * 2;                 // 0 = im Fokus
         // Namen: Kreis links, Fokus am rechten Kreisrand
-        const tStr = focus(clamp((Math.cos(a) + 1) / 2), 0.42, 2.6);
-        place(titles[i], xT + (Math.cos(a) - 1) * rT, Math.sin(a) * rT, mix(0.68, 1, tStr), mix(0.18, 1, tStr), Math.round(mix(1, 30, tStr)), " translateY(-50%)");
+        const tStr = tS[i] = focus(clamp((Math.cos(a) + 1) / 2), 0.42, 2.6);
+        place(titles[i], xT + (Math.cos(a) - 1) * rT, Math.sin(a) * rT, mix(0.68, 1, tStr), mix(0.18, 1, tStr), " translateY(-50%)");
         // Bilder: Kreis rechts, Fokus am linken Kreisrand
-        const cStr = focus(clamp((Math.cos(a) + 1) / 2), 0.45, 3.2);
-        place(cards[i], xC - (Math.cos(a) - 1) * rC, Math.sin(a) * rC, mix(0.58, 1, cStr), mix(0.14, 1, cStr), Math.round(mix(1, 40, cStr)));
-        const istFokus = Math.abs(i - f) < 0.5;
-        titles[i].classList.toggle("is-focus", istFokus); cards[i].classList.toggle("is-focus", istFokus);
-        cards[i].tabIndex = istFokus ? 0 : -1;
+        const cStr = cS[i] = focus(clamp((Math.cos(a) + 1) / 2), 0.45, 3.2);
+        place(cards[i], xC - (Math.cos(a) - 1) * rC, Math.sin(a) * rC, mix(0.58, 1, cStr), mix(0.14, 1, cStr));
       }
-      bgs.forEach((bg, i) => { const o = clamp(1 - Math.abs(i - f)); bg.style.opacity = (o * o * (3 - 2 * o)).toFixed(3); });   // weiche Überblendung
+      stapeln(titles, tS); stapeln(cards, cS);
+      // weiche Überblendung; Hintergründe weiter als anderthalb Projekte weg sind unsichtbar – Safari malt sie dann nicht (vorher alle fünf
+      // auf einmal beim Hereinscrollen), der nächste wird schon gemalt, während er noch durchsichtig ist
+      bgs.forEach((bg, i) => { const d = Math.abs(i - f), o = clamp(1 - d); setz(bg, "opacity", (o * o * (3 - 2 * o)).toFixed(3)); setz(bg, "visibility", d < 1.6 ? "" : "hidden"); });
       const aktiv = Math.round(f);
-      if (aktiv !== last) { last = aktiv; dots.forEach((d, j) => d.classList.toggle("is-active", j === aktiv)); }
+      if (aktiv !== last) {
+        last = aktiv;
+        dots.forEach((d, j) => d.classList.toggle("is-active", j === aktiv));
+        for (let i = 0; i < n; i++) { titles[i].classList.toggle("is-focus", i === aktiv); cards[i].classList.toggle("is-focus", i === aktiv); cards[i].tabIndex = i === aktiv ? 0 : -1; }
+      }
     };
     const measure = () => { const r = wrap.getBoundingClientRect(); target = clamp(-r.top / (r.height - innerHeight)) * (n - 1); };
-    const loop = () => {
+    const loop = (t) => {
+      const dt = Math.min(0.1, Math.max(0.001, (t - zuletzt) / 1000)); zuletzt = t;
       measure();                                                   // lesen, dann schreiben (ein Layout pro Bild)
-      shown += (target - shown) * 0.12;                            // weich nachziehen („scrub“)
+      shown += (target - shown) * (1 - Math.pow(0.88, dt * 120));  // weich nachziehen („scrub“): so schnell wie bisher am 120-Hz-Bildschirm, jetzt bei jeder Bildrate gleich
       if (Math.abs(target - shown) < 0.001) shown = target;
       render(shown);
       if (shown !== target) requestAnimationFrame(loop); else running = false;
     };
-    const kick = () => { if (!running) { running = true; requestAnimationFrame(loop); } };
+    const kick = () => { if (!running) { running = true; zuletzt = performance.now(); requestAnimationFrame(loop); } };
     new IntersectionObserver(([e]) => { visible = e.isIntersecting; wrap.classList.toggle("is-sichtbar", visible); if (visible) kick(); }, { rootMargin: "0px" }).observe(wrap);
+    // Hintergründe vorab entpacken, solange die Rolle noch weiter weg ist (sonst entpackt Safari sie erst beim ersten Zeigen, mitten im Scrollen)
+    const vorab = new IntersectionObserver(([e]) => {
+      if (!e.isIntersecting) return; vorab.disconnect();
+      wrap.fae_bgs = bgs.map((bg) => { const u = /url\(["']?([^"')]+)/.exec(bg.style.backgroundImage); if (!u) return null; const im = new Image(); im.src = u[1]; if (im.decode) im.decode().catch(() => {}); return im; });
+    }, { rootMargin: "150% 0px" });
+    vorab.observe(wrap);
     addEventListener("scroll", () => { if (visible) kick(); }, { passive: true });
     addEventListener("resize", () => { measure(); render(shown); });
     measure(); shown = target; render(shown);
@@ -1118,14 +1136,8 @@
     melder.forEach((m) => { if (m.el.hasAttribute("data-melder")) m.el.classList.add("melder-bereit"); io.observe(m.el); });
   })();
 
-  /* ---------- Magazin-Hefte (Ralf 09.10.2026): Maus/Fokus über CSS; am Handy hebt sich die Kante, solange ein Heft in der
-     Bildschirmmitte steht ---------- */
-  (function magazinHefte() {
-    const hefte = $$(".mz");
-    if (!hefte.length || !window.matchMedia("(hover: none)").matches) return;
-    const io = new IntersectionObserver((es) => es.forEach((e) => e.target.classList.toggle("ist-an", e.isIntersecting)), { rootMargin: "-38% 0px -38% 0px" });
-    hefte.forEach((h) => io.observe(h));
-  })();
+  /* ---------- Magazin-Hefte (Ralf 09.10.2026): Maus/Fokus über CSS. Bis 14.10.2026 hob sich am Handy/iPad die Kante, solange ein Heft
+     in der Bildschirmmitte stand – Ralf: „am iPad immer aufgefaltet, ich sehe das Cover nicht richtig“ → ohne Maus bleibt das Heft zu. ---------- */
 
   /* ---------- Magazin-Bereich (Ralf 09.10.2026): Heftstapel und – am Desktop – die Cura gebogen als Grafik darüber ---------- */
   (function magazinLicht() {
