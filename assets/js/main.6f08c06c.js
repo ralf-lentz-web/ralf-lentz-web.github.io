@@ -184,49 +184,43 @@
     const gap = parseFloat(getComputedStyle(track).gap) || 0;
     const step = () => slides[0].getBoundingClientRect().width + gap;
     const offset = () => (opts.centered ? (root.clientWidth - slides[0].getBoundingClientRect().width) / 2 : 0);
-    let wischTempo = 0;   // nach dem Wischen: kürzer und nur abbremsend (der Finger hat schon angeschoben)
-    const lauf = () => wischTempo ? `transform ${wischTempo}ms cubic-bezier(.2,.8,.2,1)` : `transform ${opts.speed}ms cubic-bezier(.4,0,.2,1)`;
     const place = (p, animate) => {
       pos = p;
-      track.style.transition = animate && !reduceMotion ? lauf() : "none";
+      track.style.transition = animate && !reduceMotion ? `transform ${opts.speed}ms cubic-bezier(.4,0,.2,1)` : "none";
       track.style.transform = `translate3d(${offset() - p * step()}px,0,0)`;
     };
     const spaeter = (fn, ms) => { nachher = fn; settle = setTimeout(() => { nachher = null; fn(); }, ms); };
     const nachholen = () => { clearTimeout(settle); const fn = nachher; nachher = null; if (fn) fn(); };   // laufende Nacharbeit sofort erledigen
-    const go = (i, instant) => {
-      const target = ((i % n) + n) % n;
-      const rueckSchleife = opts.loop && index === 0 && target === n - 1 && i < 0 && !(instant || reduceMotion);
-      nachholen();
-      if (vorgezogen && !rueckSchleife) vorziehen(false);
-      const alt = track.children[pos], weich = !(instant || reduceMotion);
-      if (instant || reduceMotion) place(target, false);
-      else if (opts.loop && index === n - 1 && target === 0) {
-        // vorwärts auf die Kopie, danach unsichtbar auf die echte erste Folie
-        place(n, true);
-        const klon = track.children[n], a = kbStart(klon);
-        spaeter(() => { place(0, false); kbStart(slides[0], a ? a.currentTime : 0); kbStopp(klon, 0); }, opts.speed + 30);
-      } else if (rueckSchleife && vorgezogen) {
-        // beim Wischen liegt die letzte Folie schon links neben der ersten: von der gezogenen Lage aus hinschieben, danach unsichtbar an ihren Platz
-        track.style.transition = lauf();
-        track.style.transform = `translate3d(${offset() + step()}px,0,0)`;
-        kbStart(slides[n - 1]);
-        spaeter(() => { vorziehen(false); place(n - 1, false); }, opts.speed + 30);
-      } else if (rueckSchleife) {
-        // rückwärts: erst unsichtbar auf die Kopie, dann zur letzten Folie schieben
-        place(n, false); void track.offsetWidth; place(n - 1, true);
-      } else { place(target, true); kbStart(slides[target]); }
-      if (instant || reduceMotion) kbStart(slides[target]);
-      if (alt && alt !== track.children[pos] && alt !== slides[target]) kbStopp(alt, weich ? opts.speed + 60 : 0);   // erst nach dem Hinausschieben zurücksetzen
+    // nach jedem Folienwechsel: Zoom der alten Folie zurücksetzen, Punkte, Video (startet erst, wenn die Folie ganz da ist)
+    const wechsel = (target, alt, nach) => {
+      if (alt && alt !== track.children[pos] && alt !== slides[target]) kbStopp(alt, nach ? nach + 60 : 0);   // erst nach dem Hinausschieben zurücksetzen
       index = target;
       bullets.forEach((b, k) => b.classList.toggle("is-active", k === index));
       root.classList.toggle("is-video-slide", slides[index].hasAttribute("data-video"));
       slides.forEach((s, k) => {
         const v = $("video", s); if (!v) return;
-        // Video erst starten, wenn die Folie fertig hereingeschoben ist – so ist die Animation komplett zu sehen.
-        if (k === index) { v.pause(); v.currentTime = 0; clearTimeout(v._t); v._t = setTimeout(() => { if (slides[index] === s) v.play().catch(() => {}); }, instant || reduceMotion ? 0 : opts.speed); }
+        if (k === index) { v.pause(); v.currentTime = 0; clearTimeout(v._t); v._t = setTimeout(() => { if (slides[index] === s) v.play().catch(() => {}); }, nach); }
         else { clearTimeout(v._t); if (!v.paused) v.pause(); if (k === (index + 1) % n && v.preload === "none") { v.preload = "auto"; v.load(); } }
       });
       if (timer) start();
+    };
+    const go = (i, instant) => {
+      const target = ((i % n) + n) % n;
+      nachholen();
+      if (vorgezogen) vorziehen(false);
+      const alt = track.children[pos], weich = !(instant || reduceMotion);
+      if (!weich) place(target, false);
+      else if (opts.loop && index === n - 1 && target === 0) {
+        // vorwärts auf die Kopie, danach unsichtbar auf die echte erste Folie
+        place(n, true);
+        const klon = track.children[n], a = kbStart(klon);
+        spaeter(() => { place(0, false); kbStart(slides[0], a ? a.currentTime : 0); kbStopp(klon, 0); }, opts.speed + 30);
+      } else if (opts.loop && index === 0 && target === n - 1 && i < 0) {
+        // rückwärts: erst unsichtbar auf die Kopie, dann zur letzten Folie schieben
+        place(n, false); void track.offsetWidth; place(n - 1, true);
+      } else { place(target, true); kbStart(slides[target]); }
+      if (!weich) kbStart(slides[target]);
+      wechsel(target, alt, weich ? opts.speed : 0);
     };
     // Video-Folie: kein Takt, das Video läuft einmal komplett und schiebt danach selbst weiter.
     const start = () => {
@@ -243,7 +237,7 @@
       root.addEventListener("mouseenter", () => { paused = true; stop(); });
       root.addEventListener("mouseleave", () => { paused = false; start(); });
     }
-    window.addEventListener("resize", () => { clearTimeout(settle); place(index, false); $$(`${opts.slide} img`, track).forEach((im) => im._kb && kbUrsprung(im)); });
+    window.addEventListener("resize", () => { clearTimeout(settle); nachher = null; if (vorgezogen) vorziehen(false); place(index, false); $$(`${opts.slide} img`, track).forEach((im) => im._kb && kbUrsprung(im)); });
     // Außerhalb des Bildes anhalten: ein unsichtbarer Slider würde alle paar Sekunden eine riesige Fläche neu zeichnen –
     // genau das ruckelt beim Lesen weiter unten. Die Klasse is-sichtbar steuert zudem will-change im CSS.
     if ("IntersectionObserver" in window) new IntersectionObserver(([e]) => {
@@ -252,47 +246,70 @@
       if (hidden) { stop(); if (v && !v.paused) v.pause(); kbAlle((a) => a.pause()); }
       else { if (v && v.paused && v.currentTime > 0 && v.currentTime < v.duration) v.play().catch(() => {}); kbAlle((a) => a.playState !== "finished" && a.play()); start(); }
     }, { rootMargin: "0px" }).observe(root);
-    // Wischen (Ralf 14.10.2026: „am iPad nach links und rechts wischen, um durch die Bilder zu sliden“): Finger/Stift ziehen das Bild mit,
-    // beim Loslassen weiter oder zurück (ab 15 % der Breite oder bei schnellem Wisch), sonst schnappt es zurück. Dafür steht im CSS
-    // touch-action: pan-y – vorher hielt Safari jede waagerechte Bewegung für einen Seitenschwenk, brach ab (pointercancel) und das Wischen
-    // kam nie an. Beim Ziehen nach rechts auf der ersten Folie rückt die letzte links daneben (vorziehen). Maus: wie bisher.
+    /* Wischen mit dem Finger (Ralf 14.10.2026: „am iPad nach links und rechts wischen“; erste Fassung mit Pointer-Ereignissen: „geht richtig
+       bescheiden“). Jetzt Touch-Ereignisse: Die erste merkliche Bewegung (6 px) entscheidet – waagerecht gehört sie dem Slider, und
+       preventDefault() hält Safari davon ab, die Seite zu schieben (vorher brach Safari das Wischen bei leicht schrägem Finger ab). Senkrecht
+       scrollt die Seite wie immer. Läuft gerade ein Wechsel, bleibt das Bild dort stehen, wo es ist, und hängt am Finger (kein Sprung).
+       Loslassen: geschnippt → in Wischrichtung zur nächsten Folie; langsam → ab 15 % Weg weiter, sonst zurück. Die Restbewegung startet mit der
+       Fingergeschwindigkeit und bremst weich ab (Dauer daraus, 260–650 ms). Rechts von der ersten Folie rückt die letzte links daneben. Maus: Ziehen
+       und Loslassen wie bisher. touch-action: pan-y pinch-zoom im CSS. */
     function vorziehen(an) { vorgezogen = an; slides[n - 1].style.transform = an ? `translate3d(${-n * step()}px,0,0)` : ""; }
-    let x0 = null, zug = null, klickSperre = 0;
-    root.addEventListener("pointerdown", (e) => {
-      if (e.pointerType === "mouse") { x0 = e.clientX; return; }
-      zug = { id: e.pointerId, x: e.clientX, y: e.clientY, an: false, dx: 0, v: 0, lx: e.clientX, lt: e.timeStamp };
-    });
-    root.addEventListener("pointermove", (e) => {
-      if (!zug || e.pointerId !== zug.id) return;
-      const dx = e.clientX - zug.x, dy = e.clientY - zug.y;
-      if (!zug.an) {
-        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { zug = null; return; }   // senkrecht: die Seite scrollt
-        if (Math.abs(dx) < 10) return;
-        zug.an = true; stop(); nachholen();
-        try { root.setPointerCapture(e.pointerId); } catch (err) { /* ohne Erfassung geht es auch */ }
-      }
-      const dt = e.timeStamp - zug.lt; if (dt > 0) { zug.v = 0.6 * zug.v + 0.4 * (e.clientX - zug.lx) / dt; zug.lx = e.clientX; zug.lt = e.timeStamp; }
-      let d = dx;
-      if (opts.loop && index === 0 && d > 0 && !vorgezogen) vorziehen(true);
-      if ((d > 0 && !opts.loop && index === 0) || (d < 0 && !opts.loop && index === n - 1)) d *= 0.35;   // ohne Nachbarfolie: gebremst
-      zug.dx = d;
-      track.style.transition = "none";
-      track.style.transform = `translate3d(${offset() - pos * step() + d}px,0,0)`;
-    });
-    const loslassen = (e) => {
-      if (!zug || e.pointerId !== zug.id) return;
+    const lageJetzt = () => {   // sichtbare Lage des Streifens in Folien (auch mitten in einem Wechsel)
+      const m = getComputedStyle(track).transform, x = m && m !== "none" ? new DOMMatrixReadOnly(m).m41 : offset() - pos * step();
+      return (offset() - x) / step();
+    };
+    const setzeLage = (q) => { track.style.transition = "none"; track.style.transform = `translate3d(${offset() - q * step()}px,0,0)`; };
+    let zug = null, klickSperre = 0, x0 = null;
+    const loslassen = (abgebrochen) => {
       const z = zug; zug = null;
-      if (!z.an) return;
-      klickSperre = e.timeStamp + 400;   // kein Klick auf einen Link unter dem Finger nach dem Wischen
-      const weit = Math.abs(z.dx) > root.clientWidth * 0.15 || (Math.abs(z.v) > 0.45 && Math.sign(z.v) === Math.sign(z.dx));
-      wischTempo = 650;
-      if (e.type === "pointerup" && weit) go(index + (z.dx < 0 ? 1 : -1));
-      else { place(pos, true); if (vorgezogen) spaeter(() => vorziehen(false), wischTempo + 30); }
-      wischTempo = 0;
+      if (!z || !z.an) return;
+      klickSperre = performance.now() + 400;   // kein Klick auf einen Link unter dem Finger nach dem Wischen
+      const q = z.q, schnell = Math.abs(z.v) > 0.3;   // v in px/ms, negativ = Finger nach links = vorwärts
+      let ziel = abgebrochen ? Math.round(q)
+        : schnell ? (z.v < 0 ? Math.floor(q + 1e-3) + 1 : Math.ceil(q - 1e-3) - 1)
+        : Math.abs(q - z.q0) > 0.15 ? (q > z.q0 ? Math.ceil(q) : Math.floor(q)) : Math.round(q);
+      ziel = opts.loop ? Math.min(n, Math.max(-1, ziel)) : Math.min(n - 1, Math.max(0, ziel));
+      const rest = Math.abs(ziel - q) * step(), dauer = Math.round(Math.min(650, Math.max(260, 4 * rest / Math.max(Math.abs(z.v), 0.6))));
+      track.style.transition = `transform ${dauer}ms cubic-bezier(.2,.8,.2,1)`;   // Anfangstempo = 4 × Mittel = Fingertempo
+      track.style.transform = `translate3d(${offset() - ziel * step()}px,0,0)`;
+      const el = ziel === -1 ? slides[n - 1] : track.children[ziel], neu = ((ziel % n) + n) % n;
+      const im = kbBild(el); if (!im || !im._kb) kbStart(el);   // Zoom auf der Zielfolie läuft weiter bzw. beginnt
+      [...track.children].forEach((c) => { if (c !== el) kbStopp(c, dauer + 60); });
+      pos = ziel;
+      spaeter(() => {   // danach unsichtbar auf die echte Folie
+        if (ziel === n) { const a = kbBild(track.children[n]); place(0, false); kbStart(slides[0], a && a._kb ? a._kb.currentTime : 0); kbStopp(track.children[n], 0); }
+        else if (ziel === -1) { vorziehen(false); place(n - 1, false); }
+        else if (vorgezogen) vorziehen(false);
+      }, dauer + 30);
+      if (neu !== index) wechsel(neu, null, dauer);
       start();
     };
-    root.addEventListener("pointerup", loslassen); root.addEventListener("pointercancel", loslassen);
+    root.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) { if (zug) loslassen(true); return; }   // zwei Finger: Zoomen, nicht wischen
+      const t = e.touches[0]; zug = { x: t.clientX, y: t.clientY, an: false, q0: 0, q: 0, v: 0, lx: t.clientX, lt: e.timeStamp };
+    }, { passive: true });
+    root.addEventListener("touchmove", (e) => {
+      if (!zug) return;
+      if (e.touches.length !== 1) { loslassen(true); return; }
+      const t = e.touches[0], dx = t.clientX - zug.x, dy = t.clientY - zug.y;
+      if (!zug.an) {
+        if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+        if (Math.abs(dy) >= Math.abs(dx)) { zug = null; return; }   // senkrecht: die Seite scrollt
+        zug.an = true; stop();
+        clearTimeout(settle); nachher = null;   // laufenden Wechsel anhalten, wo er gerade ist – die Nacharbeit übernimmt das Loslassen
+        zug.q0 = lageJetzt(); setzeLage(zug.q0);
+      }
+      if (e.cancelable) e.preventDefault();
+      const dt = e.timeStamp - zug.lt; if (dt > 0) { zug.v = 0.5 * zug.v + 0.5 * (t.clientX - zug.lx) / dt; zug.lx = t.clientX; zug.lt = e.timeStamp; }
+      let q = zug.q0 - dx / step();
+      if (opts.loop) q = Math.min(n, Math.max(-1, q)); else if (q < 0) q *= 0.35; else if (q > n - 1) q = n - 1 + (q - n + 1) * 0.35;   // ohne Nachbarfolie: gebremst
+      if (opts.loop && q < 0 && !vorgezogen) vorziehen(true);
+      zug.q = q; setzeLage(q);
+    }, { passive: false });
+    root.addEventListener("touchend", (e) => { if (zug && e.touches.length === 0) { if (zug.an && e.timeStamp - zug.lt > 80) zug.v = 0; loslassen(false); } }, { passive: true });   // Finger lag vor dem Loslassen still: kein Schwung
+    root.addEventListener("touchcancel", () => loslassen(true), { passive: true });
     root.addEventListener("click", (e) => { if (e.timeStamp < klickSperre) { e.preventDefault(); e.stopPropagation(); } }, true);
+    root.addEventListener("pointerdown", (e) => { if (e.pointerType === "mouse") x0 = e.clientX; });
     root.addEventListener("pointerup", (e) => { if (x0 === null || e.pointerType !== "mouse") return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 40) { go(index + (dx < 0 ? 1 : -1)); start(); } });
     go(0, true);
     start();
