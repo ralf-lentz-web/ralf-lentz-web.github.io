@@ -310,6 +310,9 @@ p.headline-small, span.headline-small { line-height: 1.5; }
 
 /* ---------- Hero ---------- */
 .hero { position: relative; height: 100vh; min-height: 640px; }
+/* Bild-Slider (Startbild, Projekt-Titelbilder, Kopfbilder der Bereiche): waagerechtes Wischen gehört dem Slider, senkrecht scrollt die Seite,
+   Zoomen mit zwei Fingern bleibt (Ralf 14.10.2026, iPad; main.js slider) */
+.hero, .cover, .bs-hero--slider { touch-action: pan-y pinch-zoom; }
 .hero__slider { position: absolute; inset: var(--default-gap); overflow: hidden; border-radius: var(--small-border-radius); background: #000; }
 .hero__track { display: flex; height: 100%; gap: var(--default-gap); }
 .hero.is-sichtbar .hero__track { will-change: transform; }
@@ -1323,7 +1326,7 @@ p.headline-small, span.headline-small { line-height: 1.5; }
 @media (hover: none) { .st-knopf { cursor: default; } }
 
 /* Lightbox: Bild groß auf dunklem Grund, Pfeile wie am Magazinstapel; Esc, × oder Klick daneben schließt; Wischen blättert */
-.lb { max-width: none; max-height: none; width: 100vw; height: 100dvh; margin: 0; padding: 0; border: 0; background: transparent; color: #fff; }
+.lb { max-width: none; max-height: none; width: 100vw; height: 100dvh; margin: 0; padding: 0; border: 0; background: transparent; color: #fff; touch-action: pan-y pinch-zoom; }   /* waagerechtes Wischen blättert (sonst bricht Safari es als Schwenk ab) */
 .lb[open] { display: grid; grid-template-columns: 56px minmax(0, 1fr) 56px; align-items: center; justify-items: center; gap: 8px; padding: 24px; box-sizing: border-box; animation: lb-auf .35s ease; }
 @keyframes lb-auf { from { opacity: 0; scale: .97; } }
 .lb::backdrop { background: rgb(8 8 10 / .86); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }

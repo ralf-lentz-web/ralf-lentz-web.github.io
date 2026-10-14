@@ -158,7 +158,7 @@
     if (opts.loop) { const c = slides[0].cloneNode(true); c.setAttribute("aria-hidden", "true"); track.appendChild(c); }
     // Bilder vorab dekodieren, damit das erste Hereinschieben nicht ruckelt
     $$("img", track).forEach((im) => { im.decoding = "async"; if (im.decode) im.decode().catch(() => {}); });
-    let index = 0, pos = 0, timer = null, paused = false, settle = null, hidden = false;
+    let index = 0, pos = 0, timer = null, paused = false, settle = null, nachher = null, hidden = false, vorgezogen = false;
     // Kamerafahrt (Ralf 08.10.2026): Jedes Foto zoomt über seine ganze Standzeit langsam auf seinen Fluchtpunkt zu – als würde
     // man in den Raum hineingezogen. Die Texte stehen still, dadurch entsteht die Tiefenwirkung. Dauer = Hereinschieben +
     // Stehen + Hinausschieben, weich an- und auslaufend (Easy Ease), nur 5 % – Ralf fand 10 % linear zu kräftig. Web Animations API: läuft auf der Grafikkarte, ohne Layout.
@@ -184,22 +184,34 @@
     const gap = parseFloat(getComputedStyle(track).gap) || 0;
     const step = () => slides[0].getBoundingClientRect().width + gap;
     const offset = () => (opts.centered ? (root.clientWidth - slides[0].getBoundingClientRect().width) / 2 : 0);
+    let wischTempo = 0;   // nach dem Wischen: kürzer und nur abbremsend (der Finger hat schon angeschoben)
+    const lauf = () => wischTempo ? `transform ${wischTempo}ms cubic-bezier(.2,.8,.2,1)` : `transform ${opts.speed}ms cubic-bezier(.4,0,.2,1)`;
     const place = (p, animate) => {
       pos = p;
-      track.style.transition = animate && !reduceMotion ? `transform ${opts.speed}ms cubic-bezier(.4,0,.2,1)` : "none";
+      track.style.transition = animate && !reduceMotion ? lauf() : "none";
       track.style.transform = `translate3d(${offset() - p * step()}px,0,0)`;
     };
+    const spaeter = (fn, ms) => { nachher = fn; settle = setTimeout(() => { nachher = null; fn(); }, ms); };
+    const nachholen = () => { clearTimeout(settle); const fn = nachher; nachher = null; if (fn) fn(); };   // laufende Nacharbeit sofort erledigen
     const go = (i, instant) => {
       const target = ((i % n) + n) % n;
-      clearTimeout(settle);
+      const rueckSchleife = opts.loop && index === 0 && target === n - 1 && i < 0 && !(instant || reduceMotion);
+      nachholen();
+      if (vorgezogen && !rueckSchleife) vorziehen(false);
       const alt = track.children[pos], weich = !(instant || reduceMotion);
       if (instant || reduceMotion) place(target, false);
       else if (opts.loop && index === n - 1 && target === 0) {
         // vorwärts auf die Kopie, danach unsichtbar auf die echte erste Folie
         place(n, true);
         const klon = track.children[n], a = kbStart(klon);
-        settle = setTimeout(() => { place(0, false); kbStart(slides[0], a ? a.currentTime : 0); kbStopp(klon, 0); }, opts.speed + 30);
-      } else if (opts.loop && index === 0 && target === n - 1 && i < 0) {
+        spaeter(() => { place(0, false); kbStart(slides[0], a ? a.currentTime : 0); kbStopp(klon, 0); }, opts.speed + 30);
+      } else if (rueckSchleife && vorgezogen) {
+        // beim Wischen liegt die letzte Folie schon links neben der ersten: von der gezogenen Lage aus hinschieben, danach unsichtbar an ihren Platz
+        track.style.transition = lauf();
+        track.style.transform = `translate3d(${offset() + step()}px,0,0)`;
+        kbStart(slides[n - 1]);
+        spaeter(() => { vorziehen(false); place(n - 1, false); }, opts.speed + 30);
+      } else if (rueckSchleife) {
         // rückwärts: erst unsichtbar auf die Kopie, dann zur letzten Folie schieben
         place(n, false); void track.offsetWidth; place(n - 1, true);
       } else { place(target, true); kbStart(slides[target]); }
@@ -240,10 +252,48 @@
       if (hidden) { stop(); if (v && !v.paused) v.pause(); kbAlle((a) => a.pause()); }
       else { if (v && v.paused && v.currentTime > 0 && v.currentTime < v.duration) v.play().catch(() => {}); kbAlle((a) => a.playState !== "finished" && a.play()); start(); }
     }, { rootMargin: "0px" }).observe(root);
-    // Wischen
-    let x0 = null;
-    root.addEventListener("pointerdown", (e) => { x0 = e.clientX; });
-    root.addEventListener("pointerup", (e) => { if (x0 === null) return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 40) { go(index + (dx < 0 ? 1 : -1)); start(); } });
+    // Wischen (Ralf 14.10.2026: „am iPad nach links und rechts wischen, um durch die Bilder zu sliden“): Finger/Stift ziehen das Bild mit,
+    // beim Loslassen weiter oder zurück (ab 15 % der Breite oder bei schnellem Wisch), sonst schnappt es zurück. Dafür steht im CSS
+    // touch-action: pan-y – vorher hielt Safari jede waagerechte Bewegung für einen Seitenschwenk, brach ab (pointercancel) und das Wischen
+    // kam nie an. Beim Ziehen nach rechts auf der ersten Folie rückt die letzte links daneben (vorziehen). Maus: wie bisher.
+    function vorziehen(an) { vorgezogen = an; slides[n - 1].style.transform = an ? `translate3d(${-n * step()}px,0,0)` : ""; }
+    let x0 = null, zug = null, klickSperre = 0;
+    root.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse") { x0 = e.clientX; return; }
+      zug = { id: e.pointerId, x: e.clientX, y: e.clientY, an: false, dx: 0, v: 0, lx: e.clientX, lt: e.timeStamp };
+    });
+    root.addEventListener("pointermove", (e) => {
+      if (!zug || e.pointerId !== zug.id) return;
+      const dx = e.clientX - zug.x, dy = e.clientY - zug.y;
+      if (!zug.an) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { zug = null; return; }   // senkrecht: die Seite scrollt
+        if (Math.abs(dx) < 10) return;
+        zug.an = true; stop(); nachholen();
+        try { root.setPointerCapture(e.pointerId); } catch (err) { /* ohne Erfassung geht es auch */ }
+      }
+      const dt = e.timeStamp - zug.lt; if (dt > 0) { zug.v = 0.6 * zug.v + 0.4 * (e.clientX - zug.lx) / dt; zug.lx = e.clientX; zug.lt = e.timeStamp; }
+      let d = dx;
+      if (opts.loop && index === 0 && d > 0 && !vorgezogen) vorziehen(true);
+      if ((d > 0 && !opts.loop && index === 0) || (d < 0 && !opts.loop && index === n - 1)) d *= 0.35;   // ohne Nachbarfolie: gebremst
+      zug.dx = d;
+      track.style.transition = "none";
+      track.style.transform = `translate3d(${offset() - pos * step() + d}px,0,0)`;
+    });
+    const loslassen = (e) => {
+      if (!zug || e.pointerId !== zug.id) return;
+      const z = zug; zug = null;
+      if (!z.an) return;
+      klickSperre = e.timeStamp + 400;   // kein Klick auf einen Link unter dem Finger nach dem Wischen
+      const weit = Math.abs(z.dx) > root.clientWidth * 0.15 || (Math.abs(z.v) > 0.45 && Math.sign(z.v) === Math.sign(z.dx));
+      wischTempo = 650;
+      if (e.type === "pointerup" && weit) go(index + (z.dx < 0 ? 1 : -1));
+      else { place(pos, true); if (vorgezogen) spaeter(() => vorziehen(false), wischTempo + 30); }
+      wischTempo = 0;
+      start();
+    };
+    root.addEventListener("pointerup", loslassen); root.addEventListener("pointercancel", loslassen);
+    root.addEventListener("click", (e) => { if (e.timeStamp < klickSperre) { e.preventDefault(); e.stopPropagation(); } }, true);
+    root.addEventListener("pointerup", (e) => { if (x0 === null || e.pointerType !== "mouse") return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 40) { go(index + (dx < 0 ? 1 : -1)); start(); } });
     go(0, true);
     start();
   }
@@ -503,7 +553,8 @@
       // 0–8 %: dunkel · 8–85 %: Licht läuft an · danach: hell
       // cfg.lauf = [a, b]: linear über diesen Teil des Abschnitts (WTC-Lichtschrift: die Spur soll bis kurz vor Ende von Zitat 2 wachsen)
       const progressToS = cfg.lauf ? (p) => clamp((p - cfg.lauf[0]) / (cfg.lauf[1] - cfg.lauf[0])) : (p) => ease(clamp((p - 0.08) / 0.77));
-      let target = 0, shown = 0, running = false, visible = false, gl = null, draw = null;
+      let target = 0, shown = 0, running = false, visible = false, gl = null, draw = null, kopfH = 0;
+      const kopfMessen = () => { const k = $(".site-header"); kopfH = k ? Math.max(0, k.getBoundingClientRect().bottom) : 0; };   // für cfg.oberkante
 
       const fallback = (s) => { anImg.style.opacity = Math.pow(s, 1.6).toFixed(3); };
 
@@ -570,7 +621,9 @@
         // Bilddaten unverändert übernehmen (Kern-Grünkanal = Einschaltzeitpunkt, darf nicht farbkorrigiert werden)
         g.pixelStorei(g.UNPACK_COLORSPACE_CONVERSION_WEBGL, g.NONE); g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
         // Texturbreite nach Bedarf des Ausschnitts: im Hochformat füllt das Querbild die Höhe, braucht also Höhe·Seitenverhältnis Pixel
-        const w = Math.max(innerWidth, innerHeight * cfg.aspect) * Math.min(devicePixelRatio || 1, 2) > 1400 ? 2400 : 1280;
+        // mit cfg.oberkante zeigt das Fenster nur das Band → Bild entsprechend größer
+        const band = cfg.oberkante != null && cfg.unterkante != null ? cfg.unterkante - cfg.oberkante : 1;
+        const w = Math.max(innerWidth, innerHeight * cfg.aspect / band) * Math.min(devicePixelRatio || 1, 2) > 1400 ? 2400 : 1280;
         const q = cfg.v ? `?v=${cfg.v}` : "";   // Versionskennung gegen veraltete Bilder im Browser-Cache
         const names = [["uAus", `${base}-aus-${w}.webp${q}`], ["uAn", `${base}-an-${w}.webp${q}`], ["uKern", `${base}-kern-${w}.webp${q}`], ["uVerlauf", `${base}-verlauf.png${q}`]];
         let ready = 0;
@@ -592,13 +645,18 @@
           const dpr = Math.min(devicePixelRatio || 1, 2), cw = Math.round(canvas.clientWidth * dpr), ch = Math.round(canvas.clientHeight * dpr);
           if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; g.viewport(0, 0, cw, ch); }
           const ca = cw / ch, ia = cfg.aspect;   // wie object-fit: cover
-          if (ca > ia) {   // Ausschnitt: feste Unterkante (Anteil der Bildhöhe) oder Fokus-Position
-            const sy = ia / ca, oy = cfg.unterkante != null ? Math.min(Math.max(cfg.unterkante - sy, 0), 1 - sy) : (1 - sy) * cfg.fokusY;
-            g.uniform2f(uScale, 1, sy); g.uniform2f(uOffset, 0, oy); }
-          else { g.uniform2f(uScale, ca / ia, 1); g.uniform2f(uOffset, (1 - ca / ia) * (cfg.fokusX ?? 0.5), 0); }   // fokusX: waagerechter Ausschnitt wie object-position (WTC-Turm: Turm links der Mitte)
+          let sx = ca > ia ? 1 : ca / ia, sy = ca > ia ? ia / ca : 1;
+          // cfg.oberkante (Gemäldegalerie, Ralf 14.10.2026: „am iPad genauso beschnitten wie am Desktop, die Lichtdecke selbst soll nicht zu sehen
+          // sein“): höchstens das Band oberkante–unterkante zeigen; schmalere Fenster (iPad quer/hoch) vergrößern das Bild und schneiden seitlich
+          // Was unter der festen Kopfleiste liegt, zählt nicht: die Oberkante gilt für die Linie unter der Kopfleiste (so bleibt der Desktop wie bisher)
+          const band = cfg.oberkante != null && cfg.unterkante != null ? (cfg.unterkante - cfg.oberkante) / (1 - Math.min(0.3, kopfH / (ch / dpr))) : 1;
+          if (sy > band) { sx *= band / sy; sy = band; }
+          // Ausschnitt: feste Unterkante (Anteil der Bildhöhe) oder Fokus-Position; fokusX: waagerecht wie object-position (WTC-Turm: Turm links der Mitte)
+          const oy = cfg.unterkante != null ? Math.min(Math.max(cfg.unterkante - sy, 0), 1 - sy) : (1 - sy) * (cfg.fokusY ?? 0.5), ox = (1 - sx) * (cfg.fokusX ?? 0.5);
+          g.uniform2f(uScale, sx, sy); g.uniform2f(uOffset, ox, oy);
           if (cfg.zeit) {   // nur der sichtbare Teil der Lichtspur wird über den Scrollweg verteilt (Handy: schmaler Ausschnitt; Breitbild: ganzes Fenster)
             const Z = cfg.zeit, G = (u) => Z.t0 + (Z.t1 - Z.t0) * (1 / (Z.a - Math.min(Math.max(u, 0), Z.xe)) - 1 / Z.a) / (1 / (Z.a - Z.xe) - 1 / Z.a);
-            const sx = Math.min(1, ca / ia), ox = (1 - sx) * (cfg.fokusX ?? 0.5), g0 = Math.max(0, G(ox)), g1 = Math.min(1, G(ox + sx) + cfg.rampe);   // ohne Leerlauf am Anfang
+            const g0 = Math.max(0, G(ox)), g1 = Math.min(1, G(ox + sx) + cfg.rampe);   // ohne Leerlauf am Anfang
             s = g0 + (g1 - g0) * s; }
           g.uniform1f(uS, s); g.drawArrays(g.TRIANGLE_STRIP, 0, 4);
         };
@@ -620,12 +678,13 @@
       const kick = () => { if (!running) { running = true; requestAnimationFrame(loop); } };
       new IntersectionObserver(([e]) => {
         visible = e.isIntersecting; sec.classList.toggle("is-sichtbar", visible);
+        if (visible) kopfMessen();
         if (visible && film) { film.laden(); anImg.loading = "eager"; }
         else if (visible && gl === null) { try { gl = initGL() || false; } catch (err) { gl = false; } if (!gl) anImg.loading = "eager"; }
         if (visible) kick();
       }, { rootMargin: "100% 0px" }).observe(sec);
       addEventListener("scroll", () => { if (visible) kick(); }, { passive: true });
-      addEventListener("resize", () => { if (visible) { kick(); paint(shown); } });
+      addEventListener("resize", () => { if (visible) { kopfMessen(); kick(); paint(shown); } });
       measure(); shown = target;
       // Einrichten in der Leerlaufzeit nach dem Laden, nicht erst mitten im Scrollen
       (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => {
@@ -814,7 +873,12 @@
   })();
 
   /* ---------- Leuchtturmprojekte: Kreis-Rolle (Rechenweise wie „Circular Split Roll“) ----------
-     Jedes Projekt sitzt auf zwei Kreisen; Scrollen dreht beide. Fokus = Punkt am Kreis, der zur Bildmitte zeigt. */
+     Jedes Projekt sitzt auf zwei Kreisen; Scrollen dreht beide. Fokus = Punkt am Kreis, der zur Bildmitte zeigt.
+     Zwei Wege (Ralf 14.10.2026, am iPad ruckelte es auch nach dem ersten Entlasten noch leicht):
+     • Touch-Geräte mit ViewTimeline (Safari ab 26, Chrome): Lage und Deckkraft stehen als Keyframes über die ganze Rolle, der Browser rechnet
+       sie selbst aus der Scroll-Lage – kein Skript je Bild, die Rolle läuft genau mit Finger und Schwung. Das Skript setzt nur noch Fokus,
+       Punkte und Reihenfolge, wenn sie wechseln.
+     • sonst (Desktop mit Maus, ältere Browser): je Bild per Skript, weich nachgezogen – unverändert. */
   (function projektRolle() {
     const wrap = $("[data-roll]");
     if (!wrap || reduceMotion) return;
@@ -823,10 +887,10 @@
     const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
     const mix = (a, b, t) => a + (b - a) * t;
     const focus = (str, start, power) => Math.pow(clamp((str - start) / (1 - start)), power);
-    let target = 0, shown = 0, running = false, visible = false, last = -1, lastPlatz = 0, lastW = 0, zuletzt = 0;
-    // iPad (Ralf 14.10.2026: „beim Scrollen durch die Leuchtturmprojekte ziemlich ruckelig“): je Bild werden nur noch Lage und Deckkraft
-    // geschrieben, und nur, wenn sie sich ändern. Stapelreihenfolge, Fokus, Tab-Reihenfolge und Kartengröße ändern sich selten – vorher kamen
-    // sie in jedem Bild neu (jede z-index-Änderung ordnet in Safari die Ebenen neu, das kostete am iPad Bilder).
+    let weg = "ViewTimeline" in window && matchMedia("(hover: none)").matches ? "zeit" : "skript";
+    let target = 0, shown = 0, running = false, visible = false, last = -1, lastPlatz = 0, lastW = 0, zuletzt = 0, anims = [], plan = 0;
+    // Je Bild werden nur Lage und Deckkraft geschrieben, und nur, wenn sie sich ändern. Stapelreihenfolge, Fokus, Tab-Reihenfolge und
+    // Kartengröße ändern sich selten (vor dem 14.10.2026 kamen sie in jedem Bild neu – jede z-index-Änderung ordnet in Safari die Ebenen neu).
     const merk = new Map();
     const setz = (el, k, v) => { let m = merk.get(el); if (!m) merk.set(el, (m = {})); if (m[k] !== v) { m[k] = v; el.style[k] = v; } };
     // Namen mit festen Zeilen (<br>) verkleinern, falls die längste Zeile nicht ins Namensfeld passt
@@ -836,33 +900,30 @@
       const zuBreit = t.scrollWidth / t.clientWidth;
       if (zuBreit > 1) t.style.fontSize = parseFloat(getComputedStyle(t).fontSize) / zuBreit + "px";
     });
-    const place = (el, x, y, scale, opacity, mitte = "") => {   // mitte: Namen um ihre eigene Höhe zentrieren
-      setz(el, "transform", `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)${mitte} scale(${scale.toFixed(3)})`);
-      setz(el, "opacity", opacity.toFixed(3));
-    };
-    // Stapelreihenfolge als Rang (stärker = weiter vorn, Gleichstand wie im Dokument): wechselt nur, wenn zwei Projekte die Plätze tauschen
-    const stapeln = (els, staerke) => els.map((_, i) => i).sort((a, b) => staerke[a] - staerke[b] || a - b).forEach((i, r) => setz(els[i], "zIndex", String(r + 1)));
-    const tS = new Array(n), cS = new Array(n);
-    const render = (f) => {                                       // f = Fokus-Index, 0 … n-1
-      const w = innerWidth, k = w < 1200 ? w / 1200 : 1;
-      const rT = 520 * k, rC = 860 * k;
-      if (w !== lastW) { lastW = w; wrap.style.setProperty("--roll-card-w", 600 * k + "px"); wrap.style.setProperty("--roll-card-h", 420 * k + "px"); }
-      const platz = Math.max(200, 2 * Math.min(w * 0.28 - 32, (w * 0.68 - 300 * k - 40) - w * 0.28));   // Namen dürfen nicht ins Bild ragen
+    const masse = () => { const w = innerWidth, k = w < 1200 ? w / 1200 : 1; return { w, k, rT: 520 * k, rC: 860 * k, xT: w * 0.03, xC: -w * 0.07 }; };   // Fokus: Name bei 28 %, Bild bei 68 % der Breite
+    const groesse = (M) => {
+      if (M.w !== lastW) { lastW = M.w; wrap.style.setProperty("--roll-card-w", 600 * M.k + "px"); wrap.style.setProperty("--roll-card-h", 420 * M.k + "px"); }
+      const platz = Math.max(200, 2 * Math.min(M.w * 0.28 - 32, (M.w * 0.68 - 300 * M.k - 40) - M.w * 0.28));   // Namen dürfen nicht ins Bild ragen
       if (platz !== lastPlatz) { lastPlatz = platz; wrap.style.setProperty("--roll-title-w", platz + "px"); fit(); }
-      const xT = w * 0.03, xC = -w * 0.07;                         // Fokus: Name bei 28 %, Bild bei 68 % der Breite
-      for (let i = 0; i < n; i++) {
-        const a = ((i - f) / SLOTS) * Math.PI * 2;                 // 0 = im Fokus
-        // Namen: Kreis links, Fokus am rechten Kreisrand
-        const tStr = tS[i] = focus(clamp((Math.cos(a) + 1) / 2), 0.42, 2.6);
-        place(titles[i], xT + (Math.cos(a) - 1) * rT, Math.sin(a) * rT, mix(0.68, 1, tStr), mix(0.18, 1, tStr), " translateY(-50%)");
+    };
+    const staerke = (i, f) => { const c = (Math.cos(((i - f) / SLOTS) * Math.PI * 2) + 1) / 2; return [focus(clamp(c), 0.42, 2.6), focus(clamp(c), 0.45, 3.2)]; };   // [Name, Bild]; 1 = im Fokus
+    const lage = (i, f, M) => {                                   // f = Fokus-Index, 0 … n-1
+      const a = ((i - f) / SLOTS) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a), [tStr, cStr] = staerke(i, f);
+      return {
+        // Namen: Kreis links, Fokus am rechten Kreisrand; translateY(-50%) zentriert sie um ihre eigene Höhe
+        tT: `translate3d(${(M.xT + (c - 1) * M.rT).toFixed(1)}px, ${(s * M.rT).toFixed(1)}px, 0) translateY(-50%) scale(${mix(0.68, 1, tStr).toFixed(3)})`, tO: mix(0.18, 1, tStr).toFixed(3),
         // Bilder: Kreis rechts, Fokus am linken Kreisrand
-        const cStr = cS[i] = focus(clamp((Math.cos(a) + 1) / 2), 0.45, 3.2);
-        place(cards[i], xC - (Math.cos(a) - 1) * rC, Math.sin(a) * rC, mix(0.58, 1, cStr), mix(0.14, 1, cStr));
-      }
-      stapeln(titles, tS); stapeln(cards, cS);
-      // weiche Überblendung; Hintergründe weiter als anderthalb Projekte weg sind unsichtbar – Safari malt sie dann nicht (vorher alle fünf
-      // auf einmal beim Hereinscrollen), der nächste wird schon gemalt, während er noch durchsichtig ist
-      bgs.forEach((bg, i) => { const d = Math.abs(i - f), o = clamp(1 - d); setz(bg, "opacity", (o * o * (3 - 2 * o)).toFixed(3)); setz(bg, "visibility", d < 1.6 ? "" : "hidden"); });
+        cT: `translate3d(${(M.xC - (c - 1) * M.rC).toFixed(1)}px, ${(s * M.rC).toFixed(1)}px, 0) scale(${mix(0.58, 1, cStr).toFixed(3)})`, cO: mix(0.14, 1, cStr).toFixed(3) };
+    };
+    const bgO = (i, f) => { const o = clamp(1 - Math.abs(i - f)); return (o * o * (3 - 2 * o)).toFixed(3); };   // weiche Überblendung
+    // Stapelreihenfolge als Rang (stärker = weiter vorn, Gleichstand wie im Dokument): wechselt nur, wenn zwei Projekte die Plätze tauschen
+    const stapeln = (els, st) => els.map((_, i) => i).sort((a, b) => st[a] - st[b] || a - b).forEach((i, r) => setz(els[i], "zIndex", String(r + 1)));
+    const zustand = (f) => {                                      // die selten wechselnden Teile
+      const st = titles.map((_, i) => staerke(i, f));
+      stapeln(titles, st.map((x) => x[0])); stapeln(cards, st.map((x) => x[1]));
+      // Hintergründe weiter als anderthalb Projekte weg sind unsichtbar – Safari malt sie dann nicht (vorher alle fünf auf einmal beim
+      // Hereinscrollen); der nächste wird schon gemalt, während er noch durchsichtig ist
+      bgs.forEach((bg, i) => setz(bg, "visibility", Math.abs(i - f) < 1.6 ? "" : "hidden"));
       const aktiv = Math.round(f);
       if (aktiv !== last) {
         last = aktiv;
@@ -870,16 +931,48 @@
         for (let i = 0; i < n; i++) { titles[i].classList.toggle("is-focus", i === aktiv); cards[i].classList.toggle("is-focus", i === aktiv); cards[i].tabIndex = i === aktiv ? 0 : -1; }
       }
     };
+    const render = (f) => {                                       // Skript-Weg: Lage und Deckkraft je Bild
+      const M = masse(); groesse(M);
+      for (let i = 0; i < n; i++) { const L = lage(i, f, M); setz(titles[i], "transform", L.tT); setz(titles[i], "opacity", L.tO); setz(cards[i], "transform", L.cT); setz(cards[i], "opacity", L.cO); }
+      bgs.forEach((bg, i) => setz(bg, "opacity", bgO(i, f)));
+      zustand(f);
+    };
+    // Zeit-Weg: Keyframes über die ganze Rolle (20 Stützstellen je Projekt, dazwischen gerade – Abweichung vom Kreis unter 0,2 px).
+    // Zeitachse = Lage der Rolle im Fenster (0: Oberkante erscheint unten, 1: Unterkante verschwindet oben); gedreht wird zwischen
+    // „Oberkante oben“ (c0) und „Unterkante unten“ (c1) – dieselben Punkte wie measure() im Skript-Weg. Davor und danach bleibt die Lage stehen.
+    const bauen = () => {
+      const M = masse(); groesse(M);
+      const H = wrap.offsetHeight, vh = innerHeight;
+      anims.forEach((a) => a.cancel()); anims = [];
+      if (!H) return;                                             // Rolle ausgeblendet (schmales Fenster: Raster)
+      const tl = new ViewTimeline({ subject: wrap }), c0 = vh / (H + vh), c1 = H / (H + vh), SCHRITT = 20, N = (n - 1) * SCHRITT;
+      const kT = titles.map(() => []), kC = cards.map(() => []), kB = bgs.map(() => []);
+      for (let j = 0; j <= N; j++) {
+        const f = j / SCHRITT, offset = c0 + (c1 - c0) * (j / N);
+        for (let i = 0; i < n; i++) { const L = lage(i, f, M); kT[i].push({ offset, transform: L.tT, opacity: L.tO }); kC[i].push({ offset, transform: L.cT, opacity: L.cO }); }
+        bgs.forEach((_, i) => kB[i].push({ offset, opacity: bgO(i, f) }));
+      }
+      const rand = (kf) => [{ ...kf[0], offset: 0 }, ...kf, { ...kf[kf.length - 1], offset: 1 }];
+      [[titles, kT], [cards, kC], [bgs, kB]].forEach(([els, kf]) => els.forEach((el, i) => anims.push(el.animate(rand(kf[i]), { timeline: tl, fill: "both" }))));
+      if (anims[0].timeline !== tl) throw new Error("animate() ohne Zeitachse");   // Browser kennt ViewTimeline, aber nicht die Option timeline
+    };
     const measure = () => { const r = wrap.getBoundingClientRect(); target = clamp(-r.top / (r.height - innerHeight)) * (n - 1); };
     const loop = (t) => {
       const dt = Math.min(0.1, Math.max(0.001, (t - zuletzt) / 1000)); zuletzt = t;
       measure();                                                   // lesen, dann schreiben (ein Layout pro Bild)
-      shown += (target - shown) * (1 - Math.pow(0.88, dt * 120));  // weich nachziehen („scrub“): so schnell wie bisher am 120-Hz-Bildschirm, jetzt bei jeder Bildrate gleich
+      shown += (target - shown) * (1 - Math.pow(0.88, dt * 120));  // weich nachziehen („scrub“): so schnell wie bisher am 120-Hz-Bildschirm, bei jeder Bildrate gleich
       if (Math.abs(target - shown) < 0.001) shown = target;
       render(shown);
       if (shown !== target) requestAnimationFrame(loop); else running = false;
     };
-    const kick = () => { if (!running) { running = true; zuletzt = performance.now(); requestAnimationFrame(loop); } };
+    const kick = () => {
+      if (weg === "zeit") { if (!plan) plan = requestAnimationFrame(() => { plan = 0; measure(); zustand(target); }); return; }
+      if (!running) { running = true; zuletzt = performance.now(); requestAnimationFrame(loop); }
+    };
+    const einrichten = () => {
+      if (weg === "zeit") { try { bauen(); measure(); zustand(target); return; } catch (err) { anims.forEach((a) => a.cancel()); anims = []; weg = "skript"; } }   // Zeitachse klappt nicht: Skript-Weg
+      measure(); render(shown);
+    };
     new IntersectionObserver(([e]) => { visible = e.isIntersecting; wrap.classList.toggle("is-sichtbar", visible); if (visible) kick(); }, { rootMargin: "0px" }).observe(wrap);
     // Hintergründe vorab entpacken, solange die Rolle noch weiter weg ist (sonst entpackt Safari sie erst beim ersten Zeigen, mitten im Scrollen)
     const vorab = new IntersectionObserver(([e]) => {
@@ -888,9 +981,10 @@
     }, { rootMargin: "150% 0px" });
     vorab.observe(wrap);
     addEventListener("scroll", () => { if (visible) kick(); }, { passive: true });
-    addEventListener("resize", () => { measure(); render(shown); });
-    measure(); shown = target; render(shown);
-    if (document.fonts) document.fonts.ready.then(() => { fit(); render(shown); });   // nach dem Laden von Orbitron neu messen
+    let neuPlan = 0;
+    addEventListener("resize", () => { if (weg === "zeit") { cancelAnimationFrame(neuPlan); neuPlan = requestAnimationFrame(einrichten); } else { measure(); render(shown); } });
+    measure(); shown = target; einrichten();
+    if (document.fonts) document.fonts.ready.then(() => { fit(); einrichten(); });   // nach dem Laden von Orbitron neu messen
   })();
 
   /* ---------- Fakten-Karten: auf Touch/Tablet per Klick aufklappen ---------- */
