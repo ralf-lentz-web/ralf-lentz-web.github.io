@@ -2820,4 +2820,5 @@ html.blatt-offen { overflow: hidden; }
    ununterbrochen, auch weit außerhalb des Bildes – die Arbeit fehlte beim Scrollen). main.js setzt .ausser-sicht an Abschnitte, die weit weg
    sind; dort halten alle CSS-Animationen an und laufen beim Wiederkommen an derselben Stelle weiter. */
 .ausser-sicht, .ausser-sicht *, .ausser-sicht *::before, .ausser-sicht *::after { animation-play-state: paused !important; }
-
+/* Beim Scrollen kein Hover (main.js hoverBeimScrollen, Ralf 19.10.2026): Karten, Hefte und Lichtschiene reagieren erst, wenn die Seite steht */
+.am-scrollen :is(.fact-card-wrapper, .mz, .bx) { pointer-events: none; }

@@ -18,7 +18,7 @@
   bildlauf(); window.addEventListener("resize", bildlauf);
 
   /* ---------- Sanftes Scrollen (Ralf 14.10.2026: „es muss ein ganz sanfter Scrolleffekt sein mit Easy Ease“) ----------
-     Mausrad und Trackpad schieben die Seite nicht mehr in Sprüngen: Jede Raste setzt nur ein Ziel, die Seite folgt ihm wie eine kritisch
+     Das Mausrad schiebt die Seite nicht mehr in Sprüngen (Trackpads seit 19.10.2026 nicht mehr – die gleiten selbst): Jede Raste setzt nur ein Ziel, die Seite folgt ihm wie eine kritisch
      gedämpfte Feder – weich an, weich aus (wie Easy Ease), auch wenn mehrere Rasten schnell nacheinander kommen (der Schwung bleibt erhalten).
      Tastatur, Bildlaufleiste, Sprungmarken und Finger bleiben beim Browser; scrollt etwas anderes (Sprungmarke, Verankerung beim Nachladen),
      wird es übernommen statt bekämpft. Aus bei „Bewegung reduzieren“, ohne feinen Zeiger (Handy/Tablet), mit Strg/Cmd (Zoom), bei offenem
@@ -27,7 +27,7 @@
     if (reduceMotion || window.FAE_SANFT === false || !matchMedia("(pointer: fine)").matches) return;
     const W = 10;   // Eigenfrequenz der Feder in 1/s: eine Raste ist nach ~0,2 s halb und nach ~0,5 s ganz da
     const html = document.documentElement;
-    let ziel = 0, pos = 0, v = 0, gesetzt = 0, laeuft = false, zuletzt = 0;
+    let ziel = 0, pos = 0, v = 0, gesetzt = 0, laeuft = false, zuletzt = 0, fein = -1e9;
     const selbstScroller = (el, dy) => {
       for (; el && el.nodeType === 1 && el !== document.body && el !== html; el = el.parentElement) {
         if (el.hasAttribute("data-sanft-aus")) return true;
@@ -51,6 +51,13 @@
     };
     addEventListener("wheel", (e) => {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || Math.abs(e.deltaX) > Math.abs(e.deltaY) || html.classList.contains("blatt-offen")) return;
+      // Nur Mausrad-Rasten glätten (Ralf 19.10.2026: „läuft nicht mehr so flüssig und springt“): Ein Trackpad schiebt schon selbst weich und
+      // mit Schwung – die Feder kam obendrauf, die Seite hinkte bis zu 200 px hinter dem Finger her und lief 0,35 s nach. Raste = wheelDelta in
+      // 120er-Schritten (Chrome, Safari, Edge) oder Zeilen/Seiten (Firefox); alles Feinere scrollt der Browser selbst. Ein feines Ereignis hält
+      // eine laufende Feder sofort an, und für 0,4 s danach bleibt alles beim Browser (mitten in einer Trackpad-Bewegung).
+      const raste = e.deltaMode !== 0 || (e.wheelDeltaY && Math.abs(e.wheelDeltaY) % 120 === 0);
+      if (!raste) { fein = e.timeStamp; halt(); return; }
+      if (e.timeStamp - fein < 400) return;
       const dy = e.deltaY * (e.deltaMode === 1 ? 32 : e.deltaMode === 2 ? innerHeight : 1);
       if (!dy || selbstScroller(e.target, dy)) return;
       e.preventDefault();
@@ -60,6 +67,16 @@
     }, { passive: false });
     // Klick (Sprungmarke, Link), Tastatur oder Bildlaufleiste übernehmen sofort – die Feder hört auf
     addEventListener("pointerdown", halt, { passive: true }); addEventListener("keydown", halt);
+  })();
+
+  /* ---------- Beim Scrollen kein Hover (Ralf 19.10.2026: „läuft nicht mehr so flüssig und springt“) ----------
+     Steht der Mauszeiger still, während die Seite darunter durchläuft, klappten die Karten („Unsere Prinzipien“, Kacheln, Leuchten) eine nach der
+     anderen auf und zu, ihr Inhalt rutschte (gemessen: 65 Verschiebungen beim Durchscrollen der Startseite), Magazin-Hefte bogen sich auf, die
+     Lichtschiene wechselte das Bild. Während des Scrollens und 0,15 s danach nehmen diese Bausteine keine Maus an (.am-scrollen im CSS). */
+  (function hoverBeimScrollen() {
+    if (!matchMedia("(hover: hover)").matches) return;
+    const html = document.documentElement; let t = 0;
+    addEventListener("scroll", () => { if (!t) html.classList.add("am-scrollen"); clearTimeout(t); t = setTimeout(() => { t = 0; html.classList.remove("am-scrollen"); }, 150); }, { passive: true });
   })();
 
   /* ---------- Daueranimationen nur im Bild (CSS .ausser-sicht): Abschnitte, die mehr als eine Bildschirmhöhe entfernt sind, halten an ---------- */
