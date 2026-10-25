@@ -8,10 +8,12 @@
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
   // Bilder für WebGL-Texturen außerhalb des Hauptfadens entpacken (Prüfung 14.10.2026: texImage2D mit einem <img> entpackte 2400-px-WebP im
   // Hauptfaden – bis zu 46 ms Hänger, während man scrollt). Daten- und Farbkanäle bleiben unverändert. Ohne createImageBitmap wie bisher per <img>.
+  // Texturen sind Hintergrundarbeit: niedrige Priorität, damit sie am Handy nicht dem ersten großen Bild die Leitung wegnehmen
+  // (Ralf 23.10.2026, SEO Punkt 2 – auf den Projektseiten lud die 0,9-MB-Textur parallel zum Kopfbild)
   const glBild = (src) => (window.createImageBitmap
-    ? fetch(src).then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); }).then((b) => createImageBitmap(b, { premultiplyAlpha: "none", colorSpaceConversion: "none" }))
+    ? fetch(src, { priority: "low" }).then((r) => { if (!r.ok) throw new Error(r.status); return r.blob(); }).then((b) => createImageBitmap(b, { premultiplyAlpha: "none", colorSpaceConversion: "none" }))
     : Promise.reject(new Error("ohne createImageBitmap")))
-    .catch(() => new Promise((ok, fehl) => { const im = new Image(); im.decoding = "async"; im.onload = () => ok(im); im.onerror = fehl; im.src = src; }));
+    .catch(() => new Promise((ok, fehl) => { const im = new Image(); im.decoding = "async"; im.fetchPriority = "low"; im.onload = () => ok(im); im.onerror = fehl; im.src = src; }));
 
   /* Breite einer festen Bildlaufleiste (Maus statt Trackpad) als --sbw: 100vw zählt sie mit, Blöcke über die volle Breite ziehen sie ab */
   const bildlauf = () => document.documentElement.style.setProperty("--sbw", (window.innerWidth - document.documentElement.clientWidth) + "px");
@@ -726,10 +728,12 @@
       addEventListener("scroll", () => { if (visible) kick(); }, { passive: true });
       addEventListener("resize", () => { if (visible) { kopfMessen(); kick(); paint(shown); } });
       measure(); shown = target;
-      // Einrichten in der Leerlaufzeit nach dem Laden, nicht erst mitten im Scrollen
-      (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => {
+      // Einrichten in der Leerlaufzeit nach dem Laden, nicht erst mitten im Scrollen – aber erst, wenn die Seite fertig geladen ist
+      // (vorher sofort: die Texturen liefen am Handy parallel zum Kopfbild und verzögerten es)
+      const imLeerlauf = () => (window.requestIdleCallback || ((f) => setTimeout(f, 1500)))(() => {
         if (!film && gl === null) { try { gl = initGL() || false; } catch (err) { gl = false; } if (!gl) anImg.loading = "eager"; }
       }, { timeout: 4000 });
+      if (document.readyState === "complete") imLeerlauf(); else addEventListener("load", imLeerlauf, { once: true });
       // Film: erst laden, wenn der Bereich näher als drei Bildschirmhöhen ist – spart Datenvolumen, wenn niemand hinscrollt
       if (film) new IntersectionObserver(([e], io) => { if (e.isIntersecting) { film.laden(); io.disconnect(); } }, { rootMargin: "300% 0px" }).observe(sec);
     });
@@ -1696,8 +1700,9 @@
   });
 
   /* ---------- Prüfplatz (Ausgabe 10, Ralf 11.10.2026: „die Spielerei, dass man das Licht anklicken kann, brauche ich nicht unbedingt“) ----------
-     Das Licht geht von selbst an, sobald der Bereich zu gut der Hälfte im Bild ist (einmal, nach einem kurzen Moment). Die beiden Karten
-     schalten zusätzlich – Bedienung wie die Lichtfarben auf der Startseite (Radiogruppe, Pfeiltasten wechseln). */
+     Das Licht ist aus, bis man es selbst einschaltet (Ralf 25.10.2026: „es muss standardmäßig ausgeschaltet sein und man hat die Möglichkeit, es
+     einzuschalten, und nicht andersrum“ – vorher ging es von selbst an, sobald der Bereich zu gut der Hälfte im Bild war). Die beiden Karten
+     schalten – Bedienung wie die Lichtfarben auf der Startseite (Radiogruppe, Pfeiltasten wechseln). */
   $$("[data-pruef]").forEach((root) => {
     const karten = $$(".pr-karte", root), status = $("[data-pr-status]", root);
     const setze = (an, vonHand) => {
@@ -1711,17 +1716,6 @@
         e.preventDefault(); const n = karten[(i + 1) % karten.length]; n.focus(); setze(n.dataset.zustand === "an", true);
       });
     });
-    if (!("IntersectionObserver" in window)) { setze(true); return; }
-    // 55 % bezogen auf das, was überhaupt ins Fenster passt (Prüfung 11.10.2026): Am Handy quer ist der Bereich 1340 px hoch, das Fenster
-    // 390 px – 55 % des Bereichs wären nie sichtbar gewesen, das Licht ging nie an.
-    const io = new IntersectionObserver(([e]) => {
-      if (!e.isIntersecting) return;
-      const passt = Math.min(e.boundingClientRect.height, (e.rootBounds && e.rootBounds.height) || innerHeight);
-      if (e.intersectionRect.height < 0.55 * passt) return;
-      io.disconnect();
-      setTimeout(() => { if (!root.classList.contains("ist-benutzt")) setze(true); }, reduceMotion ? 0 : 700);
-    }, { threshold: Array.from({ length: 21 }, (_, i) => i / 20) });
-    io.observe(root);
   });
 
   /* ---------- Sprünge innerhalb der Seite (Menü der Startseite, Kontakt-Knöpfe, Kapitel, Nach oben) ----------

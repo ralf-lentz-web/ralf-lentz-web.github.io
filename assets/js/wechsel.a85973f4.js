@@ -8,33 +8,32 @@
    Startseite oder Zurück im Browser) genauso, nur kommt die neue von oben (seit 14.10.2026; vorher fiel die alte nach unten weg – Ralf:
    „sieht schrecklich aus“). Übergangstypen ub + ub-zurueck (CSS „Seitenübergang Ebenen“), die Kopfzeile steht still. Mit Sprungmarke steht die Startseite vor
    dem ersten Bild schon beim Abschnitt (index.html ist bis zu den Abschnitten render-blockiert, <link rel="expect">); bei den
-   Anwendungsbereichen ist der Bereich gewählt, von dem man kommt. */
+   Anwendungsbereichen ist der Bereich gewählt, von dem man kommt.
+   Speichert nichts (Ralf 23.10.2026: „mach es rechtlich sicher, dass keine Cookies erhoben werden“): Richtung, Ziel und Herkunft kommen aus
+   der Navigation selbst (Navigation API: activation.navigationType, .entry, .from) – vorher merkte sich ein Klick-Handler das Ziel kurz im
+   sessionStorage („fae-wechsel“). Browser ohne Navigation API wechseln ohne Übergang (wie vorher schon, dort fehlte activation auch). */
 (function () {
   "use strict";
-  const KEY = "fae-wechsel";
-  const lies = (k) => { try { return JSON.parse(sessionStorage.getItem(k) || "null"); } catch (e) { return null; } };
-  const merke = (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
   const pfad = (u) => { try { return new URL(u, location.href).pathname; } catch (e) { return ""; } };
   const html = document.documentElement;
 
-  // Alte Seite: Klick auf einen Weg zu einer anderen Seite der Website merkt sich Ziel und Richtung
-  document.addEventListener("click", (e) => {
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-    const a = e.target.closest("a[href], [data-href]"); if (!a || a.hasAttribute("download") || (a.target && a.target !== "_self")) return;
-    let u; try { u = new URL(a.dataset.href || a.getAttribute("href"), location.href); } catch (err) { return; }
-    if (u.origin !== location.origin || u.pathname === location.pathname || !/^https?:$/.test(u.protocol)) return;
-    const art = u.pathname === "/" ? "zurueck" : "hin";   // zur Startseite (Logo, „Start“, „Zur Übersicht“) immer zurück – vorher nur mit Sprungmarke (Ralf 12.10.2026)
-    merke(KEY, { pfad: u.pathname, t: Date.now(), art, bereich: a.dataset.bereich || "" });
-  }, true);
+  // Richtung: Weg zu einer anderen Seite der Website (push) → „hin“, zur Startseite (Logo, „Start“, „Zur Übersicht“) immer „zurück“
+  // (Ralf 12.10.2026); Zurück/Vor im Browser (traverse) → „zurück“; alles andere (Neu laden, Ersetzen, gleiche Seite) ohne Übergang
+  const richtung = (typ, von, nach) => {
+    if (typ === "traverse") return "zurueck";
+    if (typ !== "push" || !von || !nach || von === nach) return "";
+    return nach === "/" ? "zurueck" : "hin";
+  };
 
   // Kopfzeile als eigene Gruppe: sie steht beim Wechsel still, nur die Seite darunter bewegt sich
   const benenne = () => { const kopf = document.querySelector(".site-header"); if (kopf) kopf.style.viewTransitionName = "ub-kopf"; };
   // Startseite mit Sprungmarke: sofort beim Abschnitt stehen (kein sichtbares Durchscrollen); Anwendungsbereiche: Bereich wählen
-  const ankunft = (u) => {
+  const ankunft = (von) => {
     const sek = location.hash && document.getElementById(location.hash.slice(1)); if (!sek) return;
-    const bx = sek.querySelector(".bx"), k = parseInt(u.bereich, 10);
+    const bx = sek.querySelector(".bx");
     if (sek.id === "bereiche" && bx) {
       const knoepfe = bx.querySelectorAll(".bx-knopf"), bilder = bx.querySelectorAll(".bx-bild");
+      const k = [...knoepfe].findIndex((kn) => kn.dataset.href && pfad(kn.dataset.href) === von);   // der Bereich, von dem man kommt
       if (k >= 0 && k < knoepfe.length) {
         knoepfe.forEach((kn, i) => { kn.classList.toggle("ist-aktiv", i === k); kn.setAttribute("aria-selected", String(i === k)); kn.tabIndex = i === k ? 0 : -1; });
         bilder.forEach((b, i) => { b.classList.toggle("ist-aktiv", i === k); if (i === k) b.removeAttribute("inert"); else b.setAttribute("inert", ""); });
@@ -49,22 +48,19 @@
     setTimeout(() => { scrollTo({ top: ziel, behavior: "instant" }); html.style.scrollBehavior = ""; }, 900);   // falls der Browser danach noch zur Sprungmarke scrollt
   };
   const typen = (vt, art) => { if (vt.types) { vt.types.add("ub"); if (art === "zurueck") vt.types.add("ub-zurueck"); } };
-  const zurueckImBrowser = (e) => (e && e.activation ? e.activation.navigationType : self.navigation && navigation.activation ? navigation.activation.navigationType : "") === "traverse";
 
   addEventListener("pageswap", (e) => {
     const vt = e.viewTransition; if (!vt) return;
-    const ziel = e.activation && e.activation.entry ? pfad(e.activation.entry.url) : "", r = lies(KEY);
-    if (r && Date.now() - r.t < 5000 && r.pfad === ziel) { typen(vt, r.art); benenne(); return; }
-    if (zurueckImBrowser(e)) { typen(vt, "zurueck"); benenne(); return; }
-    vt.skipTransition();
+    const a = e.activation, art = a && a.entry ? richtung(a.navigationType, location.pathname, pfad(a.entry.url)) : "";
+    if (!art) { vt.skipTransition(); return; }
+    typen(vt, art); benenne();
   });
   addEventListener("pagereveal", (e) => {
     const vt = e.viewTransition; if (!vt) return;
-    const r = lies(KEY); try { sessionStorage.removeItem(KEY); } catch (err) {}
-    let art;
-    if (r && Date.now() - r.t < 8000 && r.pfad === location.pathname) { art = r.art; if (art === "zurueck") ankunft(r); }
-    else if (zurueckImBrowser()) art = "zurueck";
-    else { vt.skipTransition(); return; }
+    const a = self.navigation && navigation.activation, von = a && a.from ? pfad(a.from.url) : "";
+    const art = a ? richtung(a.navigationType, von, location.pathname) : "";
+    if (!art) { vt.skipTransition(); return; }
+    if (art === "zurueck" && a.navigationType === "push") ankunft(von);
     typen(vt, art); benenne();
     html.dataset.wechselLief = art; html.dataset.wechselAb = String(Math.round(performance.now()));   // für Prüfungen
   });
